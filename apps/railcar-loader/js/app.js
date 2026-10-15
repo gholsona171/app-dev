@@ -1,0 +1,697 @@
+import { cleanVin, validateVin, extractVins, decodeVins } from './vin.js';
+import {
+  OPTIONAL_FIELDS, classCriteria, criteriaKey, criteriaLabel, summarizeClasses, comboSize, planLoads,
+} from './grouping.js';
+import { loadState, saveState, clearState, defaultState } from './storage.js';
+import { planRows, toCsv, downloadBlob, downloadXlsx, loadXlsx, loadScript } from './export.js';
+
+const SCANNER_URL = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+
+const INPUT_METHODS = [
+  { key: 'paste', label: 'Type or paste VINs' },
+  { key: 'file', label: 'Upload a file (Excel / CSV)' },
+  { key: 'scan', label: 'Scan barcodes (camera or handheld scanner)' },
+];
+
+let state = loadState();
+let activeTab = 'vehicles';
+let editor = null; // Combination being created or edited.
+let lastPlan = null;
+
+const $ = (id) => document.getElementById(id);
+
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+));
+
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : `id-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+function save() {
+  if (!saveState(state)) showStatus('Could not save to this browser. Changes will be lost when the page closes.', 'error');
+}
+
+function showStatus(text, type = 'info') {
+  $('status').innerHTML = text ? `<div class="msg ${type === 'error' ? 'error' : ''}">${esc(text)}</div>` : '';
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+// ---------- Tabs ----------
+
+function setTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+  document.querySelectorAll('.tab-panel').forEach((p) => { p.hidden = p.id !== `tab-${tab}`; });
+  if (tab !== 'vehicles') stopScan();
+  render();
+}
+
+function render() {
+  if (activeTab === 'vehicles') renderVehicles();
+  if (activeTab === 'combos') renderCombos();
+  if (activeTab === 'plan') renderPlan();
+  if (activeTab === 'settings') renderSettings();
+}
+
+// ---------- Vehicles ----------
+
+function addVins(rawList) {
+  const existing = new Set(state.vehicles.map((v) => v.vin));
+  let added = 0;
+  let duplicates = 0;
+  let invalid = 0;
+  for (const raw of rawList) {
+    const check = validateVin(raw);
+    if (!check.vin) continue;
+    if (existing.has(check.vin)) {
+      duplicates++;
+      continue;
+    }
+    existing.add(check.vin);
+    state.vehicles.push({
+      id: uid(),
+      vin: check.vin,
+      status: check.valid ? 'pending' : 'invalid',
+      error: check.error || '',
+      warning: check.warning || '',
+      decoded: false,
+    });
+    added++;
+    if (!check.valid) invalid++;
+  }
+  save();
+  const parts = [`Added ${plural(added, 'VIN')}`];
+  if (invalid) parts.push(`${invalid} invalid`);
+  if (duplicates) parts.push(`${plural(duplicates, 'duplicate')} skipped`);
+  showStatus(`${parts.join(', ')}.`);
+  render();
+  decodePending();
+  return added;
+}
+
+let decoding = false;
+
+async function decodePending() {
+  if (decoding) return;
+  decoding = true;
+  try {
+    while (true) {
+      const pending = state.vehicles.filter((v) => v.status === 'pending');
+      if (!pending.length) break;
+
+      const toFetch = [];
+      for (const v of pending) {
+        const cached = state.decodeCache[v.vin];
+        if (cached) applyDecoded(v, cached);
+        else toFetch.push(v);
+      }
+      if (!toFetch.length) {
+        save();
+        continue;
+      }
+
+      let results;
+      try {
+        results = await decodeVins(toFetch.map((v) => v.vin), {
+          onProgress: (done, total) => showStatus(`Decoding VINs… ${done} of ${total}`),
+        });
+      } catch {
+        for (const v of toFetch) {
+          v.status = 'failed';
+          v.error = 'Could not reach the decoder. Check the connection and retry.';
+        }
+        save();
+        showStatus('Could not reach the NHTSA decoder. Use "Retry decoding" when back online.', 'error');
+        break;
+      }
+
+      let failed = 0;
+      for (const v of toFetch) {
+        const r = results.get(v.vin);
+        if (r && r.decoded) {
+          state.decodeCache[v.vin] = r;
+          applyDecoded(v, r);
+        } else {
+          v.status = 'failed';
+          v.error = r?.decodeNote || 'No match found in the NHTSA database.';
+          failed++;
+        }
+      }
+      save();
+      showStatus(failed ? `Decoding finished. ${plural(failed, 'VIN')} could not be decoded.` : 'Decoding finished.', failed ? 'error' : 'info');
+    }
+  } finally {
+    decoding = false;
+    render();
+  }
+}
+
+function applyDecoded(v, r) {
+  Object.assign(v, {
+    make: r.make, model: r.model, year: r.year, trim: r.trim, body: r.body, fuel: r.fuel, drive: r.drive, plant: r.plant,
+    decoded: true, status: 'decoded', error: '',
+  });
+}
+
+function statusTag(v) {
+  if (v.status === 'decoded') {
+    return v.warning
+      ? `<span class="tag warn" title="${esc(v.warning)}">Decoded · check digit</span>`
+      : '<span class="tag ok">Decoded</span>';
+  }
+  if (v.status === 'pending') return '<span class="tag pending">Decoding…</span>';
+  const label = v.status === 'invalid' ? 'Invalid' : 'Not decoded';
+  return `<span class="tag bad" title="${esc(v.error)}">${label}</span><div class="meta">${esc(v.error)}</div>`;
+}
+
+function renderVehicles() {
+  for (const card of document.querySelectorAll('#input-methods [data-method]')) {
+    card.hidden = !state.settings.inputMethods[card.dataset.method];
+  }
+
+  const toggles = state.settings.matchFields;
+  const detail = ['Make', 'Model', ...OPTIONAL_FIELDS.filter((f) => toggles[f.key]).map((f) => f.label)];
+  $('detail-note').textContent = `Grouped by: ${detail.join(', ')}`;
+
+  const classes = summarizeClasses(state.vehicles, toggles);
+  $('class-summary').innerHTML = classes.length
+    ? `<div class="table-wrap"><table><thead><tr><th>Vehicle</th><th class="num">Count</th></tr></thead><tbody>
+        ${classes.map((c) => `<tr><td>${esc(c.label)}</td><td class="num">${c.count}</td></tr>`).join('')}
+      </tbody></table></div>`
+    : '<p class="empty">No decoded vehicles yet.</p>';
+
+  $('vehicle-count').textContent = state.vehicles.length ? `(${state.vehicles.length})` : '';
+  $('retry-decode').disabled = !state.vehicles.some((v) => v.status === 'failed');
+  $('clear-vehicles').disabled = !state.vehicles.length;
+
+  const rows = [...state.vehicles].reverse();
+  $('vehicle-table').innerHTML = rows.length
+    ? `<table><thead><tr><th>VIN</th><th>Year</th><th>Make</th><th>Model</th><th>Trim</th><th>Body / cab</th><th>Fuel</th><th>Status</th><th></th></tr></thead><tbody>
+        ${rows.map((v) => `<tr>
+          <td class="vin">${esc(v.vin)}</td><td>${esc(v.year)}</td><td>${esc(v.make)}</td><td>${esc(v.model)}</td>
+          <td>${esc(v.trim)}</td><td>${esc(v.body)}</td><td>${esc(v.fuel)}</td><td>${statusTag(v)}</td>
+          <td><button class="btn icon danger" data-remove="${esc(v.id)}" aria-label="Remove ${esc(v.vin)}">Remove</button></td>
+        </tr>`).join('')}
+      </tbody></table>`
+    : '<p class="empty">Add VINs above to get started.</p>';
+}
+
+async function handleFile(file) {
+  try {
+    let text;
+    if (/\.xlsx?$/i.test(file.name)) {
+      showStatus('Reading spreadsheet…');
+      const XLSX = await loadXlsx();
+      const book = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      text = book.SheetNames.map((name) => XLSX.utils.sheet_to_csv(book.Sheets[name])).join('\n');
+    } else {
+      text = await file.text();
+    }
+    const vins = extractVins(text);
+    if (!vins.length) showStatus(`No VINs found in ${file.name}.`, 'error');
+    else addVins(vins);
+  } catch (err) {
+    showStatus(`Could not read ${file.name}: ${err.message}`, 'error');
+  }
+}
+
+// ---------- Barcode scanning ----------
+
+let scanner = null;
+let lastScan = { vin: '', at: 0 };
+
+async function startScan() {
+  try {
+    await loadScript(SCANNER_URL);
+    const { Html5Qrcode, Html5QrcodeSupportedFormats: F } = window;
+    $('scan-reader').hidden = false;
+    scanner = new Html5Qrcode('scan-reader', {
+      formatsToSupport: [F.CODE_39, F.CODE_128, F.DATA_MATRIX, F.QR_CODE],
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      verbose: false,
+    });
+    await scanner.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(Math.min(h * 0.5, 160)) }) },
+      onScan,
+      () => {},
+    );
+    $('scan-start').hidden = true;
+    $('scan-stop').hidden = false;
+  } catch (err) {
+    showStatus(`Could not start the camera: ${err?.message || err}`, 'error');
+    await stopScan();
+  }
+}
+
+async function stopScan() {
+  if (scanner) {
+    try { await scanner.stop(); } catch { /* already stopped */ }
+    try { scanner.clear(); } catch { /* nothing to clear */ }
+    scanner = null;
+  }
+  $('scan-reader').hidden = true;
+  $('scan-start').hidden = false;
+  $('scan-stop').hidden = true;
+}
+
+function onScan(text) {
+  const vin = extractVins(text)[0] || cleanVin(text);
+  const now = Date.now();
+  if (vin === lastScan.vin && now - lastScan.at < 3000) return;
+  lastScan = { vin, at: now };
+  if (!validateVin(vin).valid) {
+    showStatus(`Scanned code is not a valid VIN: ${text}`, 'error');
+    return;
+  }
+  if (addVins([vin])) navigator.vibrate?.(80);
+}
+
+// ---------- Combinations ----------
+
+function loadTypeName(id) {
+  return state.loadTypes.find((t) => t.id === id)?.name || 'Unknown';
+}
+
+function comboAutoName(combo) {
+  return combo.items.map((i) => `${i.qty} × ${i.criteria.model || 'Vehicle'}`).join(' + ');
+}
+
+function comboName(combo) {
+  return combo.name || comboAutoName(combo);
+}
+
+// Vehicle choices for combination items: decoded vehicles at the current
+// detail level, plus anything already used in a combination.
+function vehicleCatalog() {
+  const map = new Map();
+  for (const c of summarizeClasses(state.vehicles, state.settings.matchFields)) {
+    map.set(c.key, { key: c.key, criteria: c.criteria, label: `${c.label} (${c.count} in list)` });
+  }
+  for (const combo of state.combos) {
+    for (const item of combo.items) {
+      const key = criteriaKey(item.criteria);
+      if (!map.has(key)) map.set(key, { key, criteria: item.criteria, label: criteriaLabel(item.criteria) });
+    }
+  }
+  return [...map.values()];
+}
+
+function openEditor(combo) {
+  editor = combo
+    ? { id: combo.id, name: combo.name, loadTypeId: combo.loadTypeId, items: combo.items.map((i) => ({ key: criteriaKey(i.criteria), criteria: i.criteria, qty: i.qty })) }
+    : { id: null, name: '', loadTypeId: state.loadTypes[0]?.id, items: [{ key: '', criteria: null, qty: 1 }] };
+  renderCombos();
+}
+
+// Reads the editor form back into `editor` so re-renders keep typed values.
+function syncEditor() {
+  if (!editor) return;
+  const form = $('combo-editor');
+  editor.name = form.querySelector('[name="name"]').value.trim();
+  editor.loadTypeId = form.querySelector('[name="loadType"]').value;
+  const catalog = new Map(vehicleCatalog().map((c) => [c.key, c]));
+  editor.items = [...form.querySelectorAll('.item-row')].map((row) => {
+    const key = row.querySelector('select').value;
+    const qty = Math.max(0, parseInt(row.querySelector('[name="qty"]').value, 10) || 0);
+    if (key === '__manual') {
+      const criteria = {};
+      row.querySelectorAll('[data-field]').forEach((input) => {
+        const value = input.value.trim();
+        const field = input.dataset.field;
+        if (field === 'make') criteria.make = value.toUpperCase();
+        else if (field === 'model' || value) criteria[field] = value;
+      });
+      return { key, criteria, qty };
+    }
+    return { key, criteria: catalog.get(key)?.criteria || null, qty };
+  });
+}
+
+function renderEditor() {
+  const el = $('combo-editor');
+  el.hidden = !editor;
+  if (!editor) {
+    el.innerHTML = '';
+    return;
+  }
+  const catalog = vehicleCatalog();
+  const manualFields = [
+    { key: 'make', label: 'Make' }, { key: 'model', label: 'Model' },
+    ...OPTIONAL_FIELDS.filter((f) => state.settings.matchFields[f.key]),
+  ];
+  const itemRow = (item, index) => {
+    const manual = item.key === '__manual';
+    return `<div class="item-row" data-index="${index}">
+      <select aria-label="Vehicle">
+        <option value="">Choose vehicle…</option>
+        ${catalog.map((c) => `<option value="${esc(c.key)}" ${c.key === item.key ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+        <option value="__manual" ${manual ? 'selected' : ''}>Type a vehicle not in the list…</option>
+      </select>
+      <input type="number" name="qty" min="1" value="${esc(item.qty)}" aria-label="Quantity">
+      <button type="button" class="btn icon danger" data-remove-item="${index}" aria-label="Remove item">Remove</button>
+      ${manual ? `<div class="manual">${manualFields.map((f) => `<input type="text" data-field="${f.key}" placeholder="${esc(f.label)}${f.key === 'make' || f.key === 'model' ? ' (required)' : ''}" value="${esc(item.criteria?.[f.key] || '')}">`).join('')}</div>` : ''}
+    </div>`;
+  };
+  el.innerHTML = `<form class="editor" id="combo-form">
+    <h3>${editor.id ? 'Edit combination' : 'New combination'}</h3>
+    <label class="field"><span>Name (optional)</span><input type="text" name="name" value="${esc(editor.name)}" placeholder="Auto: e.g. 3 × F-150 + 1 × Equinox"></label>
+    <label class="field"><span>Load type</span><select name="loadType">
+      ${state.loadTypes.map((t) => `<option value="${esc(t.id)}" ${t.id === editor.loadTypeId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
+    </select></label>
+    <div class="field"><span><strong>Vehicles in this load</strong></span>${editor.items.map(itemRow).join('')}</div>
+    <div class="row">
+      <button type="button" class="btn small" id="add-item">Add vehicle</button>
+      <span style="flex:1"></span>
+      <button type="button" class="btn small" id="cancel-combo">Cancel</button>
+      <button type="submit" class="btn small primary">Save combination</button>
+    </div>
+  </form>`;
+}
+
+function saveEditor() {
+  syncEditor();
+  const items = editor.items.filter((i) => i.key !== '' || i.qty > 0);
+  if (!items.length) return showStatus('Add at least one vehicle to the combination.', 'error');
+  for (const item of items) {
+    if (!item.criteria || !item.criteria.make || !item.criteria.model) {
+      return showStatus('Each vehicle needs a make and model selected or typed in.', 'error');
+    }
+    if (item.qty < 1) return showStatus('Each quantity must be at least 1.', 'error');
+  }
+  // Merge duplicate vehicles into one line.
+  const merged = new Map();
+  for (const item of items) {
+    const key = criteriaKey(item.criteria);
+    if (merged.has(key)) merged.get(key).qty += item.qty;
+    else merged.set(key, { criteria: item.criteria, qty: item.qty });
+  }
+  const combo = { id: editor.id || uid(), name: editor.name, loadTypeId: editor.loadTypeId, items: [...merged.values()] };
+  const index = state.combos.findIndex((c) => c.id === combo.id);
+  if (index >= 0) state.combos[index] = combo;
+  else state.combos.push(combo);
+  editor = null;
+  save();
+  showStatus('');
+  renderCombos();
+}
+
+function renderCombos() {
+  const used = new Set(state.combos.map((c) => c.loadTypeId));
+  $('load-types').innerHTML = state.loadTypes.map((t) => `<div class="list-item">
+    <span>${esc(t.name)} <span class="meta">${plural(state.combos.filter((c) => c.loadTypeId === t.id).length, 'combination')}</span></span>
+    <div class="row">
+      <button class="btn icon" data-rename-type="${esc(t.id)}">Rename</button>
+      <button class="btn icon danger" data-delete-type="${esc(t.id)}" ${used.has(t.id) || state.loadTypes.length === 1 ? 'disabled title="In use or last load type"' : ''}>Delete</button>
+    </div>
+  </div>`).join('');
+
+  renderEditor();
+
+  $('combo-list').innerHTML = state.combos.length
+    ? state.combos.map((c, i) => `<div class="list-item">
+        <div>
+          <strong>${i + 1}. ${esc(comboName(c))}</strong>
+          <span class="meta"> · ${esc(loadTypeName(c.loadTypeId))} · ${plural(comboSize(c), 'vehicle')}</span>
+          <ul class="combo-items">${c.items.map((it) => `<li>${it.qty} × ${esc(criteriaLabel(it.criteria))}</li>`).join('')}</ul>
+        </div>
+        <div class="row">
+          <button class="btn icon" data-move="${i}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="Move up">Up</button>
+          <button class="btn icon" data-move="${i}" data-dir="1" ${i === state.combos.length - 1 ? 'disabled' : ''} aria-label="Move down">Down</button>
+          <button class="btn icon" data-edit="${esc(c.id)}">Edit</button>
+          <button class="btn icon" data-copy="${esc(c.id)}">Duplicate</button>
+          <button class="btn icon danger" data-delete="${esc(c.id)}">Delete</button>
+        </div>
+      </div>`).join('')
+    : (editor ? '' : '<p class="empty">No combinations yet. Add the vehicle mixes that fit in one load.</p>');
+}
+
+// ---------- Load plan ----------
+
+function renderPlan() {
+  const vehiclesById = new Map(state.vehicles.map((v) => [v.id, v]));
+  const disableExports = (disabled) => ['print-plan', 'export-csv', 'export-xlsx'].forEach((id) => { $(id).disabled = disabled; });
+
+  if (!state.vehicles.length || !state.combos.length) {
+    lastPlan = null;
+    disableExports(true);
+    $('plan-summary').innerHTML = `<p class="empty">${!state.vehicles.length ? 'Add vehicles on the Vehicles tab.' : 'Add allowed combinations on the Combinations tab.'}</p>`;
+    $('plan-output').innerHTML = '';
+    return;
+  }
+
+  const plan = planLoads(state.vehicles, state.combos);
+  lastPlan = plan;
+  disableExports(false);
+
+  const loaded = plan.loads.reduce((n, l) => n + l.vehicleIds.length, 0);
+  const byType = new Map();
+  for (const load of plan.loads) byType.set(load.loadTypeId, (byType.get(load.loadTypeId) || 0) + 1);
+  const typeSummary = [...byType].map(([id, n]) => plural(n, loadTypeName(id))).join(', ');
+
+  $('plan-summary').innerHTML = `<div class="stats">
+      <div class="stat"><strong>${plan.loads.length}</strong><span>Loads${typeSummary ? ` (${esc(typeSummary)})` : ''}</span></div>
+      <div class="stat"><strong>${loaded}</strong><span>Vehicles loaded</span></div>
+      <div class="stat"><strong>${plan.unassigned.length}</strong><span>Not loaded</span></div>
+    </div>
+    ${plan.exhaustive ? '' : '<p class="hint" style="margin-top:10px">Large list: this is the best plan found within the search limit.</p>'}`;
+
+  const vehicleTable = (rows) => `<div class="table-wrap"><table>
+    <thead><tr><th>VIN</th><th>Year</th><th>Make</th><th>Model</th><th>Trim</th><th>Body / cab</th><th>Fuel</th>${rows[0]?.reason !== undefined ? '<th>Reason</th>' : ''}</tr></thead>
+    <tbody>${rows.map(({ v, reason }) => `<tr><td class="vin">${esc(v.vin)}</td><td>${esc(v.year)}</td><td>${esc(v.make)}</td><td>${esc(v.model)}</td><td>${esc(v.trim)}</td><td>${esc(v.body)}</td><td>${esc(v.fuel)}</td>${reason !== undefined ? `<td>${esc(reason)}</td>` : ''}</tr>`).join('')}</tbody>
+  </table></div>`;
+
+  const date = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+  $('plan-output').innerHTML = `
+    <h2 class="print-title">Load plan · ${esc(date)} · ${plural(plan.loads.length, 'load')}, ${plural(loaded, 'vehicle')}</h2>
+    ${plan.loads.length ? '' : '<div class="card"><p class="empty">No full loads can be made with the current vehicles and combinations.</p></div>'}
+    ${plan.loads.map((load, i) => `<div class="card load-card">
+      <h3><span>Load ${i + 1} · ${esc(loadTypeName(load.loadTypeId))}</span><span class="meta">${esc(comboName(state.combos.find((c) => c.id === load.comboId) || { items: [], name: load.comboName }))} · ${plural(load.vehicleIds.length, 'vehicle')}</span></h3>
+      ${vehicleTable(load.vehicleIds.map((id) => ({ v: vehiclesById.get(id) })))}
+    </div>`).join('')}
+    ${plan.unassigned.length ? `<div class="card"><h3 style="margin-bottom:8px">Not loaded (${plan.unassigned.length})</h3>
+      ${vehicleTable(plan.unassigned.map(({ id, reason }) => ({ v: vehiclesById.get(id), reason })))}</div>` : ''}`;
+}
+
+function exportRows() {
+  const vehiclesById = new Map(state.vehicles.map((v) => [v.id, v]));
+  const loadTypesById = new Map(state.loadTypes.map((t) => [t.id, t]));
+  const plan = {
+    ...lastPlan,
+    loads: lastPlan.loads.map((l) => ({ ...l, comboName: comboName(state.combos.find((c) => c.id === l.comboId) || { items: [], name: l.comboName }) })),
+  };
+  return planRows(plan, vehiclesById, loadTypesById);
+}
+
+const fileDate = () => new Date().toISOString().slice(0, 10);
+
+// ---------- Settings ----------
+
+function renderSettings() {
+  $('input-toggles').innerHTML = INPUT_METHODS.map((m) => `<label class="toggle">
+    <input type="checkbox" data-input-method="${m.key}" ${state.settings.inputMethods[m.key] ? 'checked' : ''}> ${esc(m.label)}
+  </label>`).join('');
+  $('match-toggles').innerHTML = `<label class="toggle locked"><input type="checkbox" checked disabled> Make and model (always on)</label>
+    ${OPTIONAL_FIELDS.map((f) => `<label class="toggle">
+      <input type="checkbox" data-match-field="${f.key}" ${state.settings.matchFields[f.key] ? 'checked' : ''}> ${esc(f.label)}
+    </label>`).join('')}`;
+}
+
+// ---------- Events ----------
+
+document.querySelector('.tabs').addEventListener('click', (e) => {
+  const tab = e.target.closest('[data-tab]')?.dataset.tab;
+  if (tab) setTab(tab);
+});
+
+$('paste-add').addEventListener('click', () => {
+  const tokens = $('paste-input').value.split(/[\s,;]+/).filter(Boolean);
+  if (!tokens.length) return;
+  addVins(tokens);
+  $('paste-input').value = '';
+});
+
+$('file-input').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) handleFile(file);
+  e.target.value = '';
+});
+
+$('scan-start').addEventListener('click', startScan);
+$('scan-stop').addEventListener('click', stopScan);
+
+$('scanner-input').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const value = e.target.value.trim();
+  e.target.value = '';
+  if (value) addVins([extractVins(value)[0] || value]);
+});
+
+$('vehicle-table').addEventListener('click', (e) => {
+  const id = e.target.closest('[data-remove]')?.dataset.remove;
+  if (!id) return;
+  state.vehicles = state.vehicles.filter((v) => v.id !== id);
+  save();
+  renderVehicles();
+});
+
+$('retry-decode').addEventListener('click', () => {
+  for (const v of state.vehicles) if (v.status === 'failed') v.status = 'pending';
+  save();
+  renderVehicles();
+  decodePending();
+});
+
+$('clear-vehicles').addEventListener('click', () => {
+  if (!confirm(`Remove all ${state.vehicles.length} vehicles?`)) return;
+  state.vehicles = [];
+  save();
+  showStatus('');
+  renderVehicles();
+});
+
+$('load-type-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = $('load-type-name').value.trim();
+  if (!name) return;
+  state.loadTypes.push({ id: uid(), name });
+  $('load-type-name').value = '';
+  save();
+  syncEditor();
+  renderCombos();
+});
+
+$('load-types').addEventListener('click', (e) => {
+  const renameId = e.target.closest('[data-rename-type]')?.dataset.renameType;
+  const deleteId = e.target.closest('[data-delete-type]')?.dataset.deleteType;
+  syncEditor();
+  if (renameId) {
+    const type = state.loadTypes.find((t) => t.id === renameId);
+    const name = prompt('Load type name', type.name)?.trim();
+    if (name) type.name = name;
+  }
+  if (deleteId) state.loadTypes = state.loadTypes.filter((t) => t.id !== deleteId);
+  save();
+  renderCombos();
+});
+
+$('combo-new').addEventListener('click', () => openEditor(null));
+
+$('combo-editor').addEventListener('click', (e) => {
+  if (e.target.id === 'add-item') {
+    syncEditor();
+    editor.items.push({ key: '', criteria: null, qty: 1 });
+    renderEditor();
+  } else if (e.target.id === 'cancel-combo') {
+    editor = null;
+    showStatus('');
+    renderCombos();
+  } else if (e.target.dataset.removeItem !== undefined) {
+    syncEditor();
+    editor.items.splice(Number(e.target.dataset.removeItem), 1);
+    renderEditor();
+  }
+});
+
+$('combo-editor').addEventListener('change', (e) => {
+  if (e.target.matches('.item-row select')) {
+    syncEditor();
+    renderEditor();
+  }
+});
+
+$('combo-editor').addEventListener('submit', (e) => {
+  e.preventDefault();
+  saveEditor();
+});
+
+$('combo-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const { edit, copy, move, dir } = btn.dataset;
+  if (edit) return openEditor(state.combos.find((c) => c.id === edit));
+  if (copy) {
+    const source = state.combos.find((c) => c.id === copy);
+    state.combos.splice(state.combos.indexOf(source) + 1, 0, { ...structuredClone(source), id: uid(), name: source.name ? `${source.name} (copy)` : '' });
+  }
+  if (btn.dataset.delete) {
+    const combo = state.combos.find((c) => c.id === btn.dataset.delete);
+    if (!confirm(`Delete "${comboName(combo)}"?`)) return;
+    state.combos = state.combos.filter((c) => c !== combo);
+  }
+  if (move !== undefined) {
+    const i = Number(move);
+    const j = i + Number(dir);
+    [state.combos[i], state.combos[j]] = [state.combos[j], state.combos[i]];
+  }
+  save();
+  syncEditor();
+  renderCombos();
+});
+
+$('print-plan').addEventListener('click', () => window.print());
+$('export-csv').addEventListener('click', () => {
+  if (lastPlan) downloadBlob(toCsv(exportRows()), `load-plan-${fileDate()}.csv`, 'text/csv');
+});
+$('export-xlsx').addEventListener('click', async () => {
+  if (!lastPlan) return;
+  try {
+    await downloadXlsx(exportRows(), `load-plan-${fileDate()}.xlsx`);
+  } catch (err) {
+    alert(`Excel export failed: ${err.message}. Try CSV instead.`);
+  }
+});
+
+$('input-toggles').addEventListener('change', (e) => {
+  const key = e.target.dataset.inputMethod;
+  if (key) state.settings.inputMethods[key] = e.target.checked;
+  save();
+});
+
+$('match-toggles').addEventListener('change', (e) => {
+  const key = e.target.dataset.matchField;
+  if (key) state.settings.matchFields[key] = e.target.checked;
+  save();
+});
+
+$('backup').addEventListener('click', () => {
+  downloadBlob(JSON.stringify(state, null, 2), `railcar-loader-backup-${fileDate()}.json`, 'application/json');
+});
+
+$('restore').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!Array.isArray(data.vehicles) || !Array.isArray(data.combos) || !Array.isArray(data.loadTypes)) throw new Error('Not a Railcar Loader backup');
+    if (!confirm('Replace all current data with this backup?')) return;
+    const defaults = defaultState();
+    state = {
+      ...defaults,
+      ...data,
+      settings: {
+        inputMethods: { ...defaults.settings.inputMethods, ...data.settings?.inputMethods },
+        matchFields: { ...defaults.settings.matchFields, ...data.settings?.matchFields },
+      },
+      decodeCache: data.decodeCache || {},
+    };
+    save();
+    renderSettings();
+    alert('Backup restored.');
+  } catch (err) {
+    alert(`Could not restore: ${err.message}`);
+  }
+});
+
+$('reset-all').addEventListener('click', () => {
+  if (!confirm('Delete all vehicles, combinations, and settings? This cannot be undone.')) return;
+  clearState();
+  state = defaultState();
+  editor = null;
+  renderSettings();
+});
+
+render();
+decodePending();

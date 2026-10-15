@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Railcar Loader</title>
+  <meta name="description" content="Decode VINs and group vehicles into railcar load orders.">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="wrap header-inner">
+      <h1>Railcar Loader</h1>
+      <nav class="tabs" role="tablist" aria-label="Sections">
+        <button role="tab" data-tab="vehicles" aria-selected="true">Vehicles</button>
+        <button role="tab" data-tab="combos" aria-selected="false">Combinations</button>
+        <button role="tab" data-tab="plan" aria-selected="false">Load Plan</button>
+        <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- Vehicles -->
+    <section id="tab-vehicles" class="tab-panel" role="tabpanel">
+      <div id="input-methods" class="input-grid">
+        <div class="card" data-method="paste">
+          <h2>Type or paste VINs</h2>
+          <p class="hint">One per line, or separated by spaces or commas.</p>
+          <textarea id="paste-input" rows="5" spellcheck="false" placeholder="3GN7DNRP4TS134739"></textarea>
+          <button id="paste-add" class="btn primary">Add VINs</button>
+        </div>
+
+        <div class="card" data-method="file">
+          <h2>Upload a file</h2>
+          <p class="hint">Excel (.xlsx, .xls), CSV, or text. VINs are found in any column.</p>
+          <label class="file-drop">
+            <input id="file-input" type="file" accept=".xlsx,.xls,.csv,.txt">
+            <span>Choose file</span>
+          </label>
+        </div>
+
+        <div class="card" data-method="scan">
+          <h2>Scan barcodes</h2>
+          <p class="hint">Use the camera, or a handheld scanner in the box below.</p>
+          <div class="row">
+            <button id="scan-start" class="btn">Start camera</button>
+            <button id="scan-stop" class="btn" hidden>Stop camera</button>
+          </div>
+          <div id="scan-reader" class="scan-reader" hidden></div>
+          <input id="scanner-input" type="text" autocomplete="off" spellcheck="false" placeholder="Handheld scanner: scan here">
+        </div>
+      </div>
+
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Vehicle summary</h2>
+          <span class="hint" id="detail-note"></span>
+        </div>
+        <div id="class-summary"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Vehicles <span id="vehicle-count" class="count"></span></h2>
+          <div class="row">
+            <button id="retry-decode" class="btn small">Retry decoding</button>
+            <button id="clear-vehicles" class="btn small danger">Clear all</button>
+          </div>
+        </div>
+        <div id="vehicle-table" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <!-- Combinations -->
+    <section id="tab-combos" class="tab-panel" role="tabpanel" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>Load types</h2>
+          <span class="hint">What one load is, for example Railcar or Deck.</span>
+        </div>
+        <div id="load-types"></div>
+        <form id="load-type-form" class="row">
+          <input id="load-type-name" type="text" placeholder="New load type name" required>
+          <button class="btn">Add load type</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Allowed combinations</h2>
+          <button id="combo-new" class="btn primary small">New combination</button>
+        </div>
+        <p class="hint">Each combination is one full load. Combinations higher in the list are used first when plans are equally good.</p>
+        <div id="combo-editor" hidden></div>
+        <div id="combo-list"></div>
+      </div>
+    </section>
+
+    <!-- Load plan -->
+    <section id="tab-plan" class="tab-panel" role="tabpanel" hidden>
+      <div class="card no-print">
+        <div class="card-head">
+          <h2>Load plan</h2>
+          <div class="row">
+            <button id="print-plan" class="btn small">Print</button>
+            <button id="export-csv" class="btn small">Export CSV</button>
+            <button id="export-xlsx" class="btn small">Export Excel</button>
+          </div>
+        </div>
+        <div id="plan-summary"></div>
+      </div>
+      <div id="plan-output"></div>
+    </section>
+
+    <!-- Settings -->
+    <section id="tab-settings" class="tab-panel" role="tabpanel" hidden>
+      <div class="card">
+        <h2>VIN input methods</h2>
+        <p class="hint">Choose which input options appear on the Vehicles tab.</p>
+        <div id="input-toggles" class="toggle-list"></div>
+      </div>
+
+      <div class="card">
+        <h2>Vehicle matching detail</h2>
+        <p class="hint">Make and model are always used. Turn on more fields to treat, for example, an F-150 SuperCrew and Regular Cab as different vehicles. This applies to new combination items; existing items keep the detail they were created with.</p>
+        <div id="match-toggles" class="toggle-list"></div>
+      </div>
+
+      <div class="card">
+        <h2>Data</h2>
+        <p class="hint">Data is saved in this browser only. Download a backup to keep a copy or move it to another device.</p>
+        <div class="row">
+          <button id="backup" class="btn">Download backup</button>
+          <label class="btn">
+            Restore backup
+            <input id="restore" type="file" accept=".json" hidden>
+          </label>
+          <button id="reset-all" class="btn danger">Reset all data</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
