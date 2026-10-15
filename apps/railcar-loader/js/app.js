@@ -3,9 +3,8 @@ import {
   OPTIONAL_FIELDS, classCriteria, criteriaKey, criteriaLabel, summarizeClasses, comboSize, planLoads,
 } from './grouping.js';
 import { loadState, saveState, clearState, defaultState } from './storage.js';
-import { planRows, toCsv, downloadBlob, downloadXlsx, loadXlsx, loadScript } from './export.js';
-
-const SCANNER_URL = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+import { planRows, toCsv, downloadBlob, downloadXlsx, loadXlsx } from './export.js';
+import { VinScanner } from './scanner.js';
 
 const INPUT_METHODS = [
   { key: 'paste', label: 'Type or paste VINs' },
@@ -42,7 +41,6 @@ function setTab(tab) {
   activeTab = tab;
   document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
   document.querySelectorAll('.tab-panel').forEach((p) => { p.hidden = p.id !== `tab-${tab}`; });
-  if (tab !== 'vehicles') stopScan();
   render();
 }
 
@@ -215,56 +213,189 @@ async function handleFile(file) {
   }
 }
 
-// ---------- Barcode scanning ----------
+// ---------- Camera scanner ----------
 
 let scanner = null;
-let lastScan = { vin: '', at: 0 };
+let scanAdded = 0;
+let lastDetect = { vin: '', at: 0 };
+let autoReviewVin = null;
+let audioCtx = null;
 
-async function startScan() {
+function beep() {
   try {
-    await loadScript(SCANNER_URL);
-    const { Html5Qrcode, Html5QrcodeSupportedFormats: F } = window;
-    $('scan-reader').hidden = false;
-    scanner = new Html5Qrcode('scan-reader', {
-      formatsToSupport: [F.CODE_39, F.CODE_128, F.DATA_MATRIX, F.QR_CODE],
-      experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-      verbose: false,
-    });
-    await scanner.start(
-      { facingMode: 'environment' },
-      { fps: 10, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(Math.min(h * 0.5, 160)) }) },
-      onScan,
-      () => {},
-    );
-    $('scan-start').hidden = true;
-    $('scan-stop').hidden = false;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = 1200;
+    gain.gain.value = 0.08;
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.12);
+  } catch {
+    // Sound unavailable.
+  }
+}
+
+function scannerStatus(text, type = '') {
+  $('scanner-status').textContent = text;
+  $('scanner-status').className = `scanner-status ${type}`;
+}
+
+function updateScanCount() {
+  $('scanner-count').textContent = scanAdded ? `${plural(scanAdded, 'VIN')} added` : '';
+}
+
+const reviewing = () => !$('scanner-review').hidden;
+
+async function openScanner() {
+  $('scanner').hidden = false;
+  document.body.classList.add('scanning');
+  scanAdded = 0;
+  skippedAutoVins.clear();
+  autoReviewVin = null;
+  updateScanCount();
+  showReview(null);
+  $('scanner-torch').hidden = true;
+  $('scanner-zoom-wrap').hidden = true;
+  scannerStatus('Starting camera…');
+  try {
+    // Created during the tap so phones allow the success beep.
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx.resume();
+  } catch {
+    // Sound unavailable.
+  }
+
+  const current = new VinScanner({
+    video: $('scanner-video'),
+    guide: $('scanner-guide'),
+    onDetect: handleDetect,
+    onTextReady: (ok) => {
+      if (scanner === current && !reviewing()) {
+        scannerStatus(ok ? 'Ready. Reading barcodes and VIN text.' : 'Ready. Reading barcodes (text reading unavailable).');
+      }
+    },
+  });
+  scanner = current;
+  try {
+    await current.start();
+    if (scanner !== current) return;
+    if (!reviewing()) scannerStatus('Ready. Reading barcodes…');
+    const caps = current.capabilities();
+    $('scanner-torch').hidden = !caps.torch;
+    $('scanner-torch').setAttribute('aria-pressed', 'false');
+    $('scanner-zoom-wrap').hidden = !caps.zoom;
+    if (caps.zoom) Object.assign($('scanner-zoom'), { min: caps.zoom.min, max: caps.zoom.max, step: caps.zoom.step, value: caps.zoom.min });
   } catch (err) {
-    showStatus(`Could not start the camera: ${err?.message || err}`, 'error');
-    await stopScan();
+    const denied = err?.name === 'NotAllowedError' || err?.name === 'SecurityError';
+    scannerStatus(denied
+      ? 'Camera access is blocked. Allow camera access for this site in your browser settings, then try again.'
+      : `Could not start the camera: ${err?.message || err}`, 'error');
   }
 }
 
-async function stopScan() {
-  if (scanner) {
-    try { await scanner.stop(); } catch { /* already stopped */ }
-    try { scanner.clear(); } catch { /* nothing to clear */ }
-    scanner = null;
-  }
-  $('scan-reader').hidden = true;
-  $('scan-start').hidden = false;
-  $('scan-stop').hidden = true;
+function closeScanner() {
+  scanner?.stop();
+  scanner = null;
+  $('scanner').hidden = true;
+  document.body.classList.remove('scanning');
 }
 
-function onScan(text) {
-  const vin = extractVins(text)[0] || cleanVin(text);
+function flashGuide() {
+  $('scanner-guide').classList.add('hit');
+  setTimeout(() => $('scanner-guide').classList.remove('hit'), 600);
+}
+
+// VINs the user already rejected in this scanning session.
+const skippedAutoVins = new Set();
+
+// Automatic reads from the live camera. Sure reads are added right away;
+// text reads that needed a correction pause and ask the user to confirm.
+function handleDetect(vin, source, confidence) {
+  if (reviewing() || skippedAutoVins.has(vin)) return;
   const now = Date.now();
-  if (vin === lastScan.vin && now - lastScan.at < 3000) return;
-  lastScan = { vin, at: now };
-  if (!validateVin(vin).valid) {
-    showStatus(`Scanned code is not a valid VIN: ${text}`, 'error');
+  if (vin === lastDetect.vin && now - lastDetect.at < 4000) return;
+  lastDetect = { vin, at: now };
+  if (confidence === 'high') {
+    addScannedVin(vin, source === 'barcode' ? 'barcode' : 'VIN text');
     return;
   }
-  if (addVins([vin])) navigator.vibrate?.(80);
+  if (state.vehicles.some((v) => v.vin === vin)) return;
+  scanner?.pause();
+  autoReviewVin = vin;
+  showReview(vin);
+  beep();
+  scannerStatus('VIN read from text. Please check it before adding.');
+}
+
+function addScannedVin(vin, how) {
+  flashGuide();
+  if (state.vehicles.some((v) => v.vin === vin)) {
+    scannerStatus(`${vin} is already in the list.`);
+    return;
+  }
+  addVins([vin]);
+  scanAdded++;
+  updateScanCount();
+  beep();
+  navigator.vibrate?.(80);
+  scannerStatus(`Added ${vin} (${how})`, 'ok');
+}
+
+async function captureNow() {
+  if (!scanner) return;
+  $('scanner-capture').disabled = true;
+  autoReviewVin = null;
+  scannerStatus('Reading…');
+  try {
+    const result = await scanner.capture();
+    if (!scanner) return;
+    showReview(result ? result.vin : '');
+    if (!result) scannerStatus('No VIN found. Type it below, or retake closer and steadier.', 'error');
+    else if (result.confidence === 'high') scannerStatus('VIN found.', 'ok');
+    else scannerStatus('VIN found. Please double-check it.');
+  } catch (err) {
+    showReview('');
+    scannerStatus(`Capture failed: ${err.message}`, 'error');
+  } finally {
+    $('scanner-capture').disabled = false;
+  }
+}
+
+// vin === null hides the review form; '' shows it empty for typing.
+function showReview(vin) {
+  const show = vin !== null;
+  $('scanner-review').hidden = !show;
+  $('scanner-controls').hidden = show;
+  if (!show) return;
+  $('scanner-vin').value = vin;
+  updateReviewCheck();
+  if (!vin) $('scanner-vin').focus();
+}
+
+function updateReviewCheck() {
+  const check = validateVin($('scanner-vin').value);
+  const el = $('scanner-check');
+  if (!check.vin) {
+    el.textContent = '';
+    el.className = 'scanner-check';
+  } else if (!check.valid) {
+    el.textContent = check.error;
+    el.className = 'scanner-check bad';
+  } else if (check.warning) {
+    el.textContent = `${check.warning}. A character may be misread.`;
+    el.className = 'scanner-check warn';
+  } else {
+    el.textContent = 'Check digit is correct.';
+    el.className = 'scanner-check ok';
+  }
+}
+
+function retake() {
+  if (autoReviewVin) skippedAutoVins.add(autoReviewVin);
+  autoReviewVin = null;
+  showReview(null);
+  scanner?.resume();
+  scannerStatus('Ready.');
 }
 
 // ---------- Combinations ----------
@@ -517,8 +648,39 @@ $('file-input').addEventListener('change', (e) => {
   e.target.value = '';
 });
 
-$('scan-start').addEventListener('click', startScan);
-$('scan-stop').addEventListener('click', stopScan);
+$('scan-start').addEventListener('click', openScanner);
+$('scanner-close').addEventListener('click', closeScanner);
+$('scanner-capture').addEventListener('click', captureNow);
+$('scanner-retake').addEventListener('click', retake);
+$('scanner-vin').addEventListener('input', updateReviewCheck);
+$('scanner-zoom').addEventListener('input', (e) => scanner?.setZoom(Number(e.target.value)).catch(() => {}));
+
+$('scanner-torch').addEventListener('click', async (e) => {
+  const on = e.currentTarget.getAttribute('aria-pressed') !== 'true';
+  try {
+    await scanner?.setTorch(on);
+    e.currentTarget.setAttribute('aria-pressed', String(on));
+  } catch {
+    scannerStatus('The light could not be turned on.', 'error');
+  }
+});
+
+$('scanner-review').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const check = validateVin($('scanner-vin').value);
+  if (!check.valid) {
+    updateReviewCheck();
+    return;
+  }
+  addScannedVin(check.vin, autoReviewVin ? 'VIN text' : 'capture');
+  autoReviewVin = null;
+  showReview(null);
+  scanner?.resume();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('scanner').hidden) closeScanner();
+});
 
 $('scanner-input').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;

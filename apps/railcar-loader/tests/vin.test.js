@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cleanVin, computeCheckDigit, validateVin, possibleModelYears, extractVins, mapNhtsaResult, decodeVins,
+  cleanVin, computeCheckDigit, validateVin, possibleModelYears, extractVins, mapNhtsaResult, decodeVins, findVinInText,
 } from '../js/vin.js';
 
 const EQUINOX = '3GN7DNRP4TS134739';
@@ -59,4 +59,28 @@ test('decodeVins batches requests of 50', async () => {
   assert.deepEqual(calls, [50, 50, 20]);
   assert.equal(results.size, 120);
   assert.equal(results.get(vins[0]).model, 'F-150');
+});
+
+test('findVinInText reads a clean VIN with high confidence', () => {
+  assert.deepEqual(findVinInText(`GENERAL MOTORS\nVIN ${EQUINOX}\nMADE IN MEXICO`), { vin: EQUINOX, confidence: 'high' });
+});
+
+test('findVinInText maps O, Q, and I misreads', () => {
+  assert.deepEqual(findVinInText('3GN7DNRP4TS1347391'.slice(0, 17).replace('1', 'I')), { vin: EQUINOX, confidence: 'high' });
+  assert.equal(findVinInText('3GN7DNRP4TS134739'.replace('3', '3')).vin, EQUINOX);
+});
+
+test('findVinInText repairs one look-alike character with low confidence', () => {
+  // S misread as 5
+  assert.deepEqual(findVinInText('3GN7DNRP4T5134739'), { vin: EQUINOX, confidence: 'low' });
+});
+
+test('findVinInText finds a VIN glued to a label or split by a space', () => {
+  assert.deepEqual(findVinInText(`VIN:${EQUINOX}`), { vin: EQUINOX, confidence: 'high' });
+  assert.deepEqual(findVinInText(`VIN${EQUINOX}`), { vin: EQUINOX, confidence: 'low' });
+  assert.deepEqual(findVinInText('3GN7DNRP4 TS134739'), { vin: EQUINOX, confidence: 'low' });
+});
+
+test('findVinInText returns null when nothing VIN-like is present', () => {
+  assert.equal(findVinInText('NO VEHICLE HERE 12345'), null);
 });

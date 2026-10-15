@@ -62,6 +62,51 @@ export function extractVins(text) {
   return [...new Set(found)];
 }
 
+// Characters text recognition commonly confuses, used to repair one bad character.
+const LOOKALIKES = {
+  0: 'D', D: '0', 5: 'S', S: '5', 8: 'B', B: '8', 2: 'Z', Z: '2', 6: 'G', G: '6',
+  1: 'L', L: '1', U: 'V', V: 'U', 4: 'A', A: '4', 7: 'T', T: '7', M: 'N', N: 'M',
+};
+
+const isCheckValid = (vin) => VIN_PATTERN.test(vin) && YEAR_CODES.includes(vin[9]) && computeCheckDigit(vin) === vin[8];
+
+// Finds a VIN in text read from a photo (VIN plate, door sticker, paperwork).
+// Returns { vin, confidence: 'high' | 'low' } or null.
+//   high: a whole 17-character word with a correct check digit
+//   low:  repaired, cut from a longer string, or failing the check digit
+export function findVinInText(text) {
+  // O, Q, and I never appear in VINs, so they are misreads of 0 and 1.
+  const lines = String(text ?? '').toUpperCase().replace(/[OQ]/g, '0').replace(/I/g, '1').split(/\n/);
+  const words = lines.flatMap((line) => line.split(/[^A-Z0-9]+/)).filter(Boolean);
+  const exact = words.filter((w) => w.length === 17);
+
+  const valid = exact.find(isCheckValid);
+  if (valid) return { vin: valid, confidence: 'high' };
+
+  for (const word of exact) {
+    const repairs = [];
+    for (let i = 0; i < 17; i++) {
+      const alt = LOOKALIKES[word[i]];
+      if (!alt) continue;
+      const candidate = word.slice(0, i) + alt + word.slice(i + 1);
+      if (isCheckValid(candidate)) repairs.push(candidate);
+    }
+    if (repairs.length === 1) return { vin: repairs[0], confidence: 'low' };
+  }
+
+  // Text glued to the VIN ("VIN:3GN...") or a VIN split by stray spaces.
+  const joined = [...words.filter((w) => w.length > 17 && w.length <= 22), ...lines.map((l) => l.replace(/[^A-Z0-9]/g, ''))];
+  for (const s of joined) {
+    for (let i = 0; i + 17 <= s.length; i++) {
+      const candidate = s.slice(i, i + 17);
+      if (isCheckValid(candidate)) return { vin: candidate, confidence: 'low' };
+    }
+  }
+
+  const wellFormed = exact.find((w) => VIN_PATTERN.test(w));
+  return wellFormed ? { vin: wellFormed, confidence: 'low' } : null;
+}
+
 function clean(value) {
   const v = String(value ?? '').trim();
   return v === '' || v === 'Not Applicable' ? '' : v;

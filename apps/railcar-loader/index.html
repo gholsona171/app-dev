@@ -42,12 +42,8 @@
 
         <div class="card" data-method="scan">
           <h2>Scan barcodes</h2>
-          <p class="hint">Use the camera, or a handheld scanner in the box below.</p>
-          <div class="row">
-            <button id="scan-start" class="btn">Start camera</button>
-            <button id="scan-stop" class="btn" hidden>Stop camera</button>
-          </div>
-          <div id="scan-reader" class="scan-reader" hidden></div>
+          <p class="hint">Reads VIN barcodes and printed VIN text. A handheld scanner can scan into the box below.</p>
+          <button id="scan-start" class="btn primary">Open camera scanner</button>
           <input id="scanner-input" type="text" autocomplete="off" spellcheck="false" placeholder="Handheld scanner: scan here">
         </div>
       </div>
@@ -143,6 +139,38 @@
       </div>
     </section>
   </main>
+
+  <!-- Camera scanner -->
+  <div id="scanner" class="scanner" hidden role="dialog" aria-modal="true" aria-label="VIN scanner">
+    <div class="scanner-top">
+      <strong>Scan VIN</strong>
+      <span id="scanner-count" class="scanner-count"></span>
+      <button id="scanner-close" class="scanner-btn">Done</button>
+    </div>
+    <div class="scanner-view">
+      <video id="scanner-video" playsinline muted></video>
+      <div id="scanner-guide" class="scanner-guide"><span>Fit the VIN barcode or VIN text inside the box</span></div>
+    </div>
+    <div class="scanner-panel">
+      <p id="scanner-status" class="scanner-status" role="status" aria-live="polite">Starting camera…</p>
+
+      <form id="scanner-review" class="scanner-review" hidden>
+        <label for="scanner-vin">Check the VIN, then add it</label>
+        <input id="scanner-vin" type="text" maxlength="18" autocomplete="off" spellcheck="false" autocapitalize="characters">
+        <p id="scanner-check" class="scanner-check"></p>
+        <div class="scanner-actions">
+          <button type="button" id="scanner-retake" class="scanner-btn">Retake</button>
+          <button type="submit" class="scanner-btn primary">Add VIN</button>
+        </div>
+      </form>
+
+      <div id="scanner-controls" class="scanner-controls">
+        <button id="scanner-torch" class="scanner-btn" hidden aria-pressed="false">Light</button>
+        <label id="scanner-zoom-wrap" class="scanner-zoom" hidden>Zoom <input id="scanner-zoom" type="range"></label>
+        <button id="scanner-capture" class="scanner-capture" aria-label="Capture">Capture</button>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="js/app.js"></script>
 </body>
