@@ -55,6 +55,23 @@ export function loadScript(src) {
   return scripts.get(src);
 }
 
+const PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const PDFJS_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// Returns all text in a PDF, one text run per line.
+export async function readPdfText(arrayBuffer) {
+  await loadScript(PDFJS_URL);
+  const pdfjs = window.pdfjsLib;
+  pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  const pages = [];
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const content = await (await pdf.getPage(n)).getTextContent();
+    pages.push(content.items.map((item) => item.str).join('\n'));
+  }
+  return pages.join('\n');
+}
+
 export async function loadXlsx() {
   await loadScript(XLSX_URL);
   return window.XLSX;

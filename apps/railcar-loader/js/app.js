@@ -3,7 +3,7 @@ import {
   OPTIONAL_FIELDS, classCriteria, criteriaKey, criteriaLabel, summarizeClasses, comboSize, planLoads,
 } from './grouping.js';
 import { loadState, saveState, clearState, defaultState } from './storage.js';
-import { planRows, toCsv, downloadBlob, downloadXlsx, loadXlsx } from './export.js';
+import { planRows, toCsv, downloadBlob, downloadXlsx, loadXlsx, readPdfText } from './export.js';
 import { VinScanner } from './scanner.js';
 
 const INPUT_METHODS = [
@@ -202,11 +202,15 @@ async function handleFile(file) {
       const XLSX = await loadXlsx();
       const book = XLSX.read(await file.arrayBuffer(), { type: 'array' });
       text = book.SheetNames.map((name) => XLSX.utils.sheet_to_csv(book.Sheets[name])).join('\n');
+    } else if (/\.pdf$/i.test(file.name)) {
+      showStatus('Reading PDF…');
+      text = await readPdfText(await file.arrayBuffer());
     } else {
       text = await file.text();
     }
     const vins = extractVins(text);
-    if (!vins.length) showStatus(`No VINs found in ${file.name}.`, 'error');
+    if (!vins.length && /\.pdf$/i.test(file.name)) showStatus(`No VIN text found in ${file.name}. If it is a scanned image, use the camera scanner instead.`, 'error');
+    else if (!vins.length) showStatus(`No VINs found in ${file.name}.`, 'error');
     else addVins(vins);
   } catch (err) {
     showStatus(`Could not read ${file.name}: ${err.message}`, 'error');

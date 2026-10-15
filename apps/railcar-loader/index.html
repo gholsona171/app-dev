@@ -33,9 +33,9 @@
 
         <div class="card" data-method="file">
           <h2>Upload a file</h2>
-          <p class="hint">Excel (.xlsx, .xls), CSV, or text. VINs are found in any column.</p>
+          <p class="hint">PDF, Excel (.xlsx, .xls), CSV, or text. VINs are found anywhere in the file.</p>
           <label class="file-drop">
-            <input id="file-input" type="file" accept=".xlsx,.xls,.csv,.txt">
+            <input id="file-input" type="file" accept=".pdf,.xlsx,.xls,.csv,.txt">
             <span>Choose file</span>
           </label>
         </div>
@@ -149,7 +149,7 @@
     </div>
     <div class="scanner-view">
       <video id="scanner-video" playsinline muted></video>
-      <div id="scanner-guide" class="scanner-guide"><span>Fit the VIN barcode or VIN text inside the box</span></div>
+      <div id="scanner-guide" class="scanner-guide"><span>Fit the VIN barcode or VIN text inside the box. QR codes can be anywhere on screen.</span></div>
     </div>
     <div class="scanner-panel">
       <p id="scanner-status" class="scanner-status" role="status" aria-live="polite">Starting camera…</p>

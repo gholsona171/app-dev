@@ -272,6 +272,19 @@ export class VinScanner {
     return this.drawRegion(sx, sy, sw, sh);
   }
 
+  // The part of the video currently visible on screen (object-fit: cover).
+  grabVisible() {
+    const v = this.video;
+    const vw = v.videoWidth;
+    const vh = v.videoHeight;
+    if (!vw || !vh) return null;
+    const vr = v.getBoundingClientRect();
+    const scale = Math.max(vr.width / vw, vr.height / vh);
+    const sw = Math.min(vw, vr.width / scale);
+    const sh = Math.min(vh, vr.height / scale);
+    return this.drawRegion((vw - sw) / 2, (vh - sh) / 2, sw, sh);
+  }
+
   grabFull() {
     const v = this.video;
     return v.videoWidth ? this.drawRegion(0, 0, v.videoWidth, v.videoHeight) : null;
@@ -329,8 +342,11 @@ export class VinScanner {
       const canvas = this.grabGuide();
       if (canvas) {
         this.frame++;
-        // Alternate plain and enhanced reads.
-        const texts = await this.readBarcode(canvas, { enhance: this.frame % 2 === 0 });
+        // Rotate through: guide box, guide box enhanced, whole view (catches
+        // square QR and Data Matrix codes that do not fit the box).
+        const step = this.frame % 3;
+        const target = step === 2 ? this.grabVisible() : canvas;
+        const texts = await this.readBarcode(target, { enhance: step === 1 });
         const vin = texts?.map(vinFromBarcode).find(Boolean);
         if (vin && this.running && !this.paused) this.onDetect(vin, 'barcode', 'high');
         this.maybeReadText(canvas);
@@ -365,7 +381,8 @@ export class VinScanner {
     if (!guide || !full) return null;
     this.pause();
 
-    const barcodeTargets = [guide, full, rotate90(guide), rotate90(full)];
+    const visible = this.grabVisible();
+    const barcodeTargets = [guide, visible, full, rotate90(guide), rotate90(full)];
     for (const canvas of barcodeTargets) {
       for (const enhance of [false, true]) {
         const vin = (await this.readBarcode(canvas, { enhance }))?.map(vinFromBarcode).find(Boolean);
