@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   cleanVin, computeCheckDigit, validateVin, possibleModelYears, extractVins, mapNhtsaResult, decodeVins, findVinInText,
+  findAllVinsInText,
 } from '../js/vin.js';
 
 const EQUINOX = '3GN7DNRP4TS134739';
@@ -83,4 +84,38 @@ test('findVinInText finds a VIN glued to a label or split by a space', () => {
 
 test('findVinInText returns null when nothing VIN-like is present', () => {
   assert.equal(findVinInText('NO VEHICLE HERE 12345'), null);
+});
+
+test('findAllVinsInText finds every VIN in a list, high confidence when clean', () => {
+  const text = `#  VIN                Vehicle\n1  1FTFW1E5XNF100000  2022 Ford F-150\n2  ${EQUINOX}  Equinox\n3  1FTFW1E5XNF100000 again`;
+  assert.deepEqual(findAllVinsInText(text), [
+    { vin: '1FTFW1E5XNF100000', confidence: 'high' },
+    { vin: EQUINOX, confidence: 'high' },
+  ]);
+});
+
+test('findAllVinsInText marks repaired, glued, split, and bad check digit VINs as low', () => {
+  const text = [
+    '3GN7DNRP4T5134739', // S read as 5
+    'VIN1FTFW1E5XNF100000', // glued to a label
+    '1GNSKBKD6M R111000', // split by a stray space
+    '1FTFW1E57NF100003', // wrong check digit, nothing to repair
+  ].join('\n');
+  assert.deepEqual(findAllVinsInText(text), [
+    { vin: EQUINOX, confidence: 'low' },
+    { vin: '1FTFW1E5XNF100000', confidence: 'low' },
+    { vin: '1GNSKBKD6MR111000', confidence: 'low' },
+    { vin: '1FTFW1E57NF100003', confidence: 'low' },
+  ]);
+});
+
+test('findAllVinsInText keeps the high confidence read when a VIN repeats', () => {
+  assert.deepEqual(findAllVinsInText(`3GN7DNRP4T5134739\n${EQUINOX}`), [{ vin: EQUINOX, confidence: 'high' }]);
+  assert.deepEqual(findAllVinsInText('no vins here\n12345'), []);
+});
+
+test('findAllVinsInText recomputes a check digit misread as a letter, and skips implausible words', () => {
+  assert.deepEqual(findAllVinsInText('1GCUYDEDGMZ107001'), [{ vin: '1GCUYDED0MZ107001', confidence: 'low' }]);
+  assert.deepEqual(findAllVinsInText('JNSAT3BB8MW108000'), [{ vin: 'JN8AT3BB8MW108000', confidence: 'low' }]);
+  assert.deepEqual(findAllVinsInText('1CASREETAMNTNEAND'), []);
 });

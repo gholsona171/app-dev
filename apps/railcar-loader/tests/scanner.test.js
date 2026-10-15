@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { vinFromBarcode, smoothVertical, sharpenHorizontal } from '../js/scanner.js';
+import { vinFromBarcode, smoothVertical, sharpenHorizontal, tileRects } from '../js/scanner.js';
 
 const EQUINOX = '3GN7DNRP4TS134739';
 
@@ -30,4 +30,14 @@ test('sharpenHorizontal increases contrast at a bar edge', () => {
   assert.ok(out[1] >= row[1]);
   assert.ok(out[4] <= row[4]);
   assert.ok(out[2] - out[3] >= row[2] - row[3]);
+});
+
+test('tileRects covers the image with overlapping tiles', () => {
+  const tiles = tileRects(1000, 600, 1000, 100);
+  assert.equal(tiles.length, 11);
+  assert.deepEqual(tiles[0], { x: 0, y: 0, w: 1000, h: 100 });
+  assert.deepEqual(tiles.at(-1), { x: 0, y: 500, w: 1000, h: 100 });
+  const grid = tileRects(250, 250, 100, 100, 0.25);
+  assert.deepEqual([...new Set(grid.map((t) => t.x))], [0, 25, 50, 75, 100, 125, 150]);
+  assert.deepEqual(tileRects(50, 50, 100, 100), [{ x: 0, y: 0, w: 50, h: 50 }]);
 });

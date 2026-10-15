@@ -146,6 +146,23 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .status .msg { padding: 10px 14px; border-radius: 6px; background: var(--accent-soft); }
 .status .msg.error { background: var(--danger-soft); color: var(--danger); }
 
+.photo-review { scroll-margin-top: 110px; }
+.photo-review h2 { margin-bottom: 4px; }
+.photo-review-list { list-style: none; margin: 0 0 12px; padding: 0; }
+.photo-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.photo-item:first-child { border-top: 1px solid var(--border); }
+.photo-item > input[type="checkbox"] { width: 20px; height: 20px; margin: 10px 0 0; flex: none; accent-color: var(--accent); }
+.photo-item-main { flex: 1; min-width: 0; }
+.photo-item .photo-vin { font-family: ui-monospace, Menlo, Consolas, monospace; letter-spacing: 0.04em; }
+.photo-item.unsure .photo-vin { border-color: var(--warn); }
+.photo-item-notes { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin-top: 4px; font-size: 0.85rem; }
+.photo-item-notes .tag { padding: 0; }
+.photo-item-notes .hint { margin: 0; font-size: 0.85rem; }
+.photo-check { color: var(--muted); }
+.photo-check.ok { color: var(--ok); }
+.photo-check.warn { color: var(--warn); }
+.photo-check.bad { color: var(--danger); }
+
 .version-banner {
   display: block;
   width: 100%;

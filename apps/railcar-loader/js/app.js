@@ -1,13 +1,14 @@
-import { cleanVin, validateVin, extractVins, decodeVins } from './vin.js?v=20261015T1433';
+import { cleanVin, validateVin, extractVins, decodeVins } from './vin.js?v=20261015T1458';
 import {
   OPTIONAL_FIELDS, classCriteria, criteriaKey, criteriaLabel, summarizeClasses, comboSize, planLoads,
-} from './grouping.js?v=20261015T1433';
-import { loadState, saveState, clearState, defaultState } from './storage.js?v=20261015T1433';
-import { planRows, toCsv, downloadBlob, downloadXlsx, loadXlsx, readPdfText } from './export.js?v=20261015T1433';
-import { VinScanner } from './scanner.js?v=20261015T1433';
+} from './grouping.js?v=20261015T1458';
+import { loadState, saveState, clearState, defaultState } from './storage.js?v=20261015T1458';
+import { planRows, toCsv, downloadBlob, downloadXlsx, loadXlsx, readPdfText } from './export.js?v=20261015T1458';
+import { VinScanner } from './scanner.js?v=20261015T1458';
+import { isImageFile, readPhotoVins } from './photo.js?v=20261015T1458';
 
 // Must match <meta name="app-version"> in index.html. Both are set by `npm run stamp`.
-const APP_VERSION = '20261015T1433';
+const APP_VERSION = '20261015T1458';
 
 // If a cache served index.html and this file from different deploys, offer a reload.
 function checkVersion() {
@@ -28,7 +29,7 @@ checkVersion();
 
 const INPUT_METHODS = [
   { key: 'paste', label: 'Type or paste VINs' },
-  { key: 'file', label: 'Upload a file (Excel / CSV)' },
+  { key: 'file', label: 'Upload a file (photo, PDF, Excel, CSV)' },
   { key: 'scan', label: 'Scan barcodes (camera or handheld scanner)' },
 ];
 
@@ -402,22 +403,20 @@ function showReview(vin) {
   if (!vin) $('scanner-vin').focus();
 }
 
+// Check-digit wording shared by the scanner and photo review. kind: '', 'bad', 'warn', 'ok'.
+function describeCheck(raw) {
+  const check = validateVin(raw);
+  if (!check.vin) return { check, text: '', kind: '' };
+  if (!check.valid) return { check, text: check.error, kind: 'bad' };
+  if (check.warning) return { check, text: `${check.warning}. A character may be misread.`, kind: 'warn' };
+  return { check, text: 'Check digit is correct.', kind: 'ok' };
+}
+
 function updateReviewCheck() {
-  const check = validateVin($('scanner-vin').value);
+  const { text, kind } = describeCheck($('scanner-vin').value);
   const el = $('scanner-check');
-  if (!check.vin) {
-    el.textContent = '';
-    el.className = 'scanner-check';
-  } else if (!check.valid) {
-    el.textContent = check.error;
-    el.className = 'scanner-check bad';
-  } else if (check.warning) {
-    el.textContent = `${check.warning}. A character may be misread.`;
-    el.className = 'scanner-check warn';
-  } else {
-    el.textContent = 'Check digit is correct.';
-    el.className = 'scanner-check ok';
-  }
+  el.textContent = text;
+  el.className = `scanner-check ${kind}`.trim();
 }
 
 function retake() {
@@ -672,10 +671,110 @@ $('paste-add').addEventListener('click', () => {
   $('paste-input').value = '';
 });
 
+// ---------- Photo upload review ----------
+
+let photoReview = null; // { files: [names], items: [{ vin, confidence, source }] }
+
+function showPhotoReview() {
+  const panel = $('photo-review');
+  if (!photoReview?.items.length) {
+    panel.hidden = true;
+    return;
+  }
+  const { files, items } = photoReview;
+  const where = files.length === 1 ? files[0] : `${files[0]} and ${plural(files.length - 1, 'other file')}`;
+  $('photo-review-title').textContent = `Found ${plural(items.length, 'VIN')} in ${where}`;
+  const existing = new Set(state.vehicles.map((v) => v.vin));
+  $('photo-review-list').innerHTML = items.map((item, i) => `
+    <li class="photo-item${item.confidence === 'low' ? ' unsure' : ''}">
+      <input type="checkbox" data-index="${i}" aria-label="Add this VIN" ${existing.has(item.vin) || item.similarTo ? '' : 'checked'}>
+      <div class="photo-item-main">
+        <input type="text" class="photo-vin" data-index="${i}" value="${esc(item.vin)}" spellcheck="false" autocomplete="off" autocapitalize="characters" aria-label="VIN">
+        <div class="photo-item-notes">
+          ${item.confidence === 'low' ? '<span class="tag warn">Please check</span>' : ''}
+          ${item.similarTo ? `<span class="hint">Similar to ${esc(item.similarTo)}, may be a misread</span>` : ''}
+          <span class="photo-check"></span>
+          <span class="photo-dup hint">Already in list</span>
+        </div>
+      </div>
+    </li>`).join('');
+  $('photo-review-list').querySelectorAll('.photo-vin').forEach(updatePhotoItem);
+  panel.hidden = false;
+}
+
+function updatePhotoItem(input) {
+  const row = input.closest('.photo-item');
+  const { check, text, kind } = describeCheck(input.value);
+  const el = row.querySelector('.photo-check');
+  el.textContent = text;
+  el.className = `photo-check ${kind}`.trim();
+  row.querySelector('.photo-dup').hidden = !state.vehicles.some((v) => v.vin === check.vin);
+}
+
+function closePhotoReview() {
+  photoReview = null;
+  $('photo-review').hidden = true;
+  $('photo-review-list').innerHTML = '';
+}
+
+$('photo-review-list').addEventListener('input', (e) => {
+  if (!e.target.classList.contains('photo-vin')) return;
+  updatePhotoItem(e.target);
+  const box = e.target.closest('.photo-item').querySelector('input[type="checkbox"]');
+  if (box) box.checked = Boolean(cleanVin(e.target.value));
+});
+
+$('photo-review-add').addEventListener('click', () => {
+  const vins = [...$('photo-review-list').querySelectorAll('.photo-item')]
+    .filter((row) => row.querySelector('input[type="checkbox"]').checked)
+    .map((row) => row.querySelector('.photo-vin').value);
+  closePhotoReview();
+  if (vins.length) addVins(vins);
+  else showStatus('No VINs selected.');
+});
+
+$('photo-review-cancel').addEventListener('click', () => {
+  closePhotoReview();
+  showStatus('');
+});
+
+async function handlePhoto(file) {
+  const started = Date.now();
+  const found = await readPhotoVins(file, { onProgress: (text) => showStatus(text) });
+  if (!found.length) throw new Error(`No VINs found in ${file.name}. Try a sharper, closer photo, or crop it to the VINs.`);
+  photoReview ||= { files: [], items: [] };
+  photoReview.files.push(file.name);
+  for (const item of found) {
+    if (!photoReview.items.some((other) => other.vin === item.vin)) photoReview.items.push(item);
+  }
+  // Barcode and sure reads first, then ones to check.
+  photoReview.items.sort((a, b) => (a.confidence === b.confidence ? 0 : a.confidence === 'high' ? -1 : 1));
+  showPhotoReview();
+  if (photoReview.files.length === 1) $('photo-review').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  console.info(`Read ${found.length} VINs from ${file.name} in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+}
+
+let fileQueue = Promise.resolve();
+
 $('file-input').addEventListener('change', (e) => {
-  const file = e.target.files[0];
-  if (file) handleFile(file);
+  const files = [...e.target.files];
   e.target.value = '';
+  fileQueue = fileQueue.then(async () => {
+    const errors = [];
+    for (const file of files) {
+      if (!isImageFile(file)) {
+        await handleFile(file);
+        continue;
+      }
+      try {
+        await handlePhoto(file);
+      } catch (err) {
+        errors.push(err.message);
+      }
+    }
+    if (errors.length) showStatus(errors.join(' '), 'error');
+    else if (photoReview && files.some(isImageFile)) showStatus('Check the VINs below, then tap Add selected.');
+  });
 });
 
 $('scan-start').addEventListener('click', openScanner);

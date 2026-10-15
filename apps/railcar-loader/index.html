@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Railcar Loader</title>
-  <meta name="app-version" content="20261015T1433">
+  <meta name="app-version" content="20261015T1458">
   <meta name="description" content="Decode VINs and group vehicles into railcar load orders.">
-  <link rel="stylesheet" href="css/styles.css?v=20261015T1433">
+  <link rel="stylesheet" href="css/styles.css?v=20261015T1458">
 </head>
 <body>
   <header class="app-header">
@@ -34,10 +34,10 @@
 
         <div class="card" data-method="file">
           <h2>Upload a file</h2>
-          <p class="hint">PDF, Excel (.xlsx, .xls), CSV, or text. VINs are found anywhere in the file.</p>
+          <p class="hint">Photos and screenshots, PDF, Excel (.xlsx, .xls), CSV, or text. VINs are found anywhere in the file, including barcodes in photos.</p>
           <label class="file-drop">
-            <input id="file-input" type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx,application/vnd.ms-excel,.xls,text/csv,.csv,text/plain,.txt">
-            <span>Choose file</span>
+            <input id="file-input" type="file" multiple accept="image/*,.jpg,.jpeg,.png,.heic,.webp,application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx,application/vnd.ms-excel,.xls,text/csv,.csv,text/plain,.txt">
+            <span>Choose files</span>
           </label>
         </div>
 
@@ -50,6 +50,16 @@
       </div>
 
       <div id="status" class="status" role="status" aria-live="polite"></div>
+
+      <div id="photo-review" class="card photo-review" hidden>
+        <h2 id="photo-review-title">Found VINs</h2>
+        <p class="hint">Compare each VIN with the photo. Untick any you do not want to add.</p>
+        <ul id="photo-review-list" class="photo-review-list"></ul>
+        <div class="row">
+          <button id="photo-review-add" class="btn primary">Add selected</button>
+          <button id="photo-review-cancel" class="btn">Cancel</button>
+        </div>
+      </div>
 
       <div class="card">
         <div class="card-head">
@@ -173,6 +183,6 @@
     </div>
   </div>
 
-  <script type="module" src="js/app.js?v=20261015T1433"></script>
+  <script type="module" src="js/app.js?v=20261015T1458"></script>
 </body>
 </html>

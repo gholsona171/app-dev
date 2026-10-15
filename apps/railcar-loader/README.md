@@ -8,7 +8,7 @@ Built for Precision to plan train load orders. The user enters vehicle VINs, the
 
 ## How it works
 
-1. **Vehicles:** Add VINs by typing/pasting, uploading a PDF, Excel, or CSV file, or scanning (phone camera or handheld scanner). Input methods can be switched on or off in Settings. Each VIN is validated (length, characters, check digit) and decoded with the free NHTSA vPIC database.
+1. **Vehicles:** Add VINs by typing/pasting, uploading files (photos and screenshots, PDF, Excel, or CSV), or scanning (phone camera or handheld scanner). Input methods can be switched on or off in Settings. Each VIN is validated (length, characters, check digit) and decoded with the free NHTSA vPIC database.
 2. **Combinations:** Define load types (for example "Railcar") and the allowed vehicle combinations for one load. Order matters: combinations higher in the list win when two plans are equally good.
 3. **Load plan:** The app searches for the plan that loads the most vehicles, then uses the fewest loads. Vehicles that can't be loaded are listed with a reason. The plan can be printed or exported to CSV or Excel.
 
@@ -18,6 +18,13 @@ Built for Precision to plan train load orders. The user enters vehicle VINs, the
 - **Capture button:** tries every method on the current frame (barcode in the box, whole frame, rotated, then text) and shows the result to confirm or edit.
 - **Light and zoom** controls appear when the phone supports them.
 - Uses the phone's built-in barcode reader when available (Android Chrome), otherwise ZXing. Every other frame is noise-reduced and sharpened to help with blur and glare.
+
+### Photo and screenshot upload
+
+- Choose one or more photos or screenshots (JPEG, PNG, HEIC, WebP) in "Upload a file". iPhones convert HEIC to JPEG when uploading.
+- The app finds every VIN barcode, QR and Data Matrix code in the image (it scans the image in overlapping tiles), then reads the printed text and picks out every VIN.
+- A review list shows each VIN before it is added. VINs from barcodes or with a correct check digit are ticked. Uncertain text reads are marked "Please check". Likely misreads of a VIN already found, and VINs already in the list, are left unticked. Each VIN can be edited before tapping **Add selected**.
+- Reading a full page takes about 15 to 25 seconds; a cropped screenshot is quicker.
 
 ### Matching detail
 
@@ -74,7 +81,8 @@ Requires Node.js 20 or newer. No dependencies to install.
 | `css/styles.css` | Styling, including the print layout |
 | `js/app.js` | User interface and events |
 | `js/vin.js` | VIN cleaning, validation, text matching, and NHTSA decoding |
-| `js/scanner.js` | Camera scanner (barcodes and VIN text) |
+| `js/scanner.js` | Camera scanner, plus the barcode and text readers shared with photo upload |
+| `js/photo.js` | Reads every VIN from an uploaded photo or screenshot |
 | `js/grouping.js` | Vehicle matching and load planning |
 | `js/storage.js` | Saving data (browser now, Supabase later) |
 | `js/export.js` | CSV and Excel export |

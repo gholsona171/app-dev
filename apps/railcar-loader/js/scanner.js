@@ -1,10 +1,10 @@
-// Camera VIN scanner.
+// Camera VIN scanner, plus the barcode and text readers it shares with photo upload.
 // - Reads VIN barcodes (Code 39, Code 128, Data Matrix, QR) automatically.
 // - Reads printed VIN text (windshield plate, door sticker) automatically when
 //   it is clear, and on demand with the Capture button.
 
-import { cleanVin, validateVin, extractVins, findVinInText } from './vin.js?v=20261015T1433';
-import { loadScript } from './export.js?v=20261015T1433';
+import { cleanVin, validateVin, extractVins, findVinInText } from './vin.js?v=20261015T1458';
+import { loadScript } from './export.js?v=20261015T1458';
 
 const ZXING_URL = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
@@ -83,7 +83,7 @@ function toLuminance(canvas) {
   return lum;
 }
 
-function rotate90(canvas) {
+export function rotate90(canvas) {
   const out = document.createElement('canvas');
   out.width = canvas.height;
   out.height = canvas.width;
@@ -95,7 +95,7 @@ function rotate90(canvas) {
 }
 
 // Grayscale, contrast stretch, and upscale small text for better recognition.
-function prepareForText(canvas, invert = false) {
+export function prepareForText(canvas, invert = false) {
   const scale = canvas.height < 160 ? 2 : 1;
   const out = document.createElement('canvas');
   out.width = canvas.width * scale;
@@ -123,6 +123,199 @@ function prepareForText(canvas, invert = false) {
   return out;
 }
 
+// Overlapping tiles of size tileW x tileH covering the whole image. Each tile
+// starts `step` (a fraction of the tile size, 0.5 = 50% overlap) after the last.
+export function tileRects(width, height, tileW, tileH, step = 0.5) {
+  const w = Math.min(width, Math.round(tileW));
+  const h = Math.min(height, Math.round(tileH));
+  const starts = (size, tile) => {
+    const out = [];
+    const stride = Math.max(1, Math.round(tile * step));
+    for (let p = 0; p + tile < size; p += stride) out.push(p);
+    out.push(size - tile);
+    return out;
+  };
+  return starts(height, h).flatMap((y) => starts(width, w).map((x) => ({ x, y, w, h })));
+}
+
+function cropLuminance(lum, width, { x, y, w, h }) {
+  const out = new Uint8ClampedArray(w * h);
+  for (let row = 0; row < h; row++) out.set(lum.subarray((y + row) * width + x, (y + row) * width + x + w), row * w);
+  return out;
+}
+
+// Paints a found code white so the next decode of the same tile finds another one.
+function maskResult(lum, w, h, points, is1d) {
+  const xs = points.map((p) => p.getX());
+  const ys = points.map((p) => p.getY());
+  let x0 = Math.min(...xs);
+  let x1 = Math.max(...xs);
+  let y0 = Math.min(...ys);
+  let y1 = Math.max(...ys);
+  // A barcode result is a line across the bars: mask a band around it.
+  const padX = is1d ? 4 : (x1 - x0) * 0.3 + 4;
+  const padY = is1d ? (x1 - x0) * 0.25 : (y1 - y0) * 0.3 + 4;
+  x0 = Math.max(0, Math.floor(x0 - padX));
+  x1 = Math.min(w, Math.ceil(x1 + padX));
+  y0 = Math.max(0, Math.floor(y0 - padY));
+  y1 = Math.min(h, Math.ceil(y1 + padY));
+  for (let y = y0; y < y1; y++) lum.fill(255, y * w + x0, y * w + x1);
+}
+
+// Reads barcodes from any canvas: the browser's BarcodeDetector when it
+// supports Code 39, otherwise ZXing.
+export class BarcodeReader {
+  constructor() {
+    this.detector = null;
+    this.reader = null;
+    this.reader1d = null;
+    this.reader2d = null;
+    this.setup = null;
+  }
+
+  init() {
+    if (!this.setup) {
+      this.setup = (async () => {
+        if ('BarcodeDetector' in window) {
+          try {
+            const supported = await window.BarcodeDetector.getSupportedFormats();
+            const formats = NATIVE_FORMATS.filter((f) => supported.includes(f));
+            if (formats.includes('code_39')) {
+              this.detector = new window.BarcodeDetector({ formats });
+              return;
+            }
+          } catch {
+            // Fall back to ZXing.
+          }
+        }
+        await this.loadZxing();
+      })();
+      this.setup.catch(() => { this.setup = null; });
+    }
+    return this.setup;
+  }
+
+  // ZXing works in every browser, and is also used for noise-reduced reads.
+  // reader1d / reader2d only look for straight barcodes or 2D codes, which is
+  // quicker when scanning many tiles of a photo.
+  async loadZxing() {
+    if (this.reader) return;
+    await loadScript(ZXING_URL);
+    const { BarcodeFormat, DecodeHintType, MultiFormatReader } = window.ZXing;
+    const make = (formats) => {
+      const reader = new MultiFormatReader();
+      reader.setHints(new Map([[DecodeHintType.POSSIBLE_FORMATS, formats], [DecodeHintType.TRY_HARDER, true]]));
+      return reader;
+    };
+    const oneD = [BarcodeFormat.CODE_39, BarcodeFormat.CODE_128];
+    const twoD = [BarcodeFormat.DATA_MATRIX, BarcodeFormat.QR_CODE];
+    this.reader1d = make(oneD);
+    this.reader2d = make(twoD);
+    this.reader = make([...oneD, ...twoD]);
+  }
+
+  // ZXing decode of a luminance image. Returns the ZXing result or null.
+  decodeLuminance(lum, width, height, reader = this.reader) {
+    const ZXing = window.ZXing;
+    try {
+      const source = new ZXing.RGBLuminanceSource(lum, width, height);
+      return reader.decodeWithState(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source)));
+    } catch {
+      return null;
+    }
+  }
+
+  // Returns the text of the barcodes found (usually one), or null.
+  async read(canvas, { enhance = false } = {}) {
+    if (this.detector) {
+      try {
+        const codes = await this.detector.detect(canvas);
+        if (codes.length) return codes.map((c) => c.rawValue);
+      } catch {
+        // Treat as no barcode.
+      }
+      if (!enhance) return null;
+    }
+    try {
+      await this.loadZxing();
+    } catch {
+      return null;
+    }
+    let lum = toLuminance(canvas);
+    if (enhance) lum = enhanceForBarcode(lum, canvas.width, canvas.height);
+    const result = this.decodeLuminance(lum, canvas.width, canvas.height);
+    return result ? [result.getText()] : null;
+  }
+
+  // Finds every barcode in a still image (a photo or screenshot may hold many).
+  // Returns the barcode texts. onProgress(fraction) reports progress.
+  async readAll(canvas, { onProgress } = {}) {
+    await this.init();
+    const found = new Set();
+    if (this.detector) {
+      for (const target of [canvas, rotate90(canvas)]) {
+        try {
+          (await this.detector.detect(target)).forEach((c) => found.add(c.rawValue));
+        } catch {
+          // Treat as no barcode.
+        }
+      }
+      if (found.size) return [...found];
+    }
+    await this.loadZxing();
+
+    const scanTiles = (lum, width, height, tiles, reader, is1d) => {
+      for (const rect of tiles) {
+        const tile = cropLuminance(lum, width, rect);
+        for (let i = 0; i < 12; i++) {
+          const result = this.decodeLuminance(tile, rect.w, rect.h, reader);
+          if (!result) break;
+          found.add(result.getText());
+          const points = result.getResultPoints() || [];
+          if (!points.length) break;
+          maskResult(tile, rect.w, rect.h, points, is1d);
+        }
+      }
+    };
+    // Horizontal strips for barcodes (1D), square grids of a few sizes for QR / Data Matrix.
+    const strips = (w, h) => tileRects(w, h, w, h / 6);
+    const grid = (w, h) => [4, 5].flatMap((n) => tileRects(w, h, Math.min(w, h) / n, Math.min(w, h) / n, 0.25));
+    const passes = [
+      (c, lum) => scanTiles(lum, c.width, c.height, strips(c.width, c.height), this.reader1d, true),
+      (c, lum) => scanTiles(lum, c.width, c.height, grid(c.width, c.height), this.reader2d, false),
+      (c, lum) => scanTiles(enhanceForBarcode(lum, c.width, c.height), c.width, c.height, strips(c.width, c.height), this.reader1d, true),
+    ];
+    const run = async (c) => {
+      const lum = toLuminance(c);
+      for (let i = 0; i < passes.length; i++) {
+        passes[i](c, lum);
+        onProgress?.((i + 1) / passes.length);
+        await new Promise((r) => setTimeout(r)); // Let the progress message paint.
+      }
+    };
+    await run(canvas);
+    // Nothing found: the photo may be sideways.
+    if (!found.size) await run(rotate90(canvas));
+    return [...found];
+  }
+}
+
+let textWorker = null;
+
+// One Tesseract worker for the camera and photo upload, set up for VIN characters.
+export function loadTextWorker() {
+  if (!textWorker) {
+    textWorker = (async () => {
+      await loadScript(TESSERACT_URL);
+      const worker = await window.Tesseract.createWorker('eng');
+      await worker.setParameters({ tessedit_char_whitelist: `${VIN_CHARS} :`, tessedit_pageseg_mode: '6' });
+      return worker;
+    })();
+    textWorker.catch(() => { textWorker = null; });
+  }
+  return textWorker;
+}
+
 async function openCamera() {
   const base = { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } };
   try {
@@ -143,9 +336,7 @@ export class VinScanner {
     this.paused = false;
     this.stream = null;
     this.track = null;
-    this.detector = null;
-    this.reader = null;
-    this.textWorker = null;
+    this.barcodes = new BarcodeReader();
     this.textReady = null;
     this.textBusy = false;
     this.lastTextAt = 0;
@@ -202,48 +393,13 @@ export class VinScanner {
     await this.track?.applyConstraints({ advanced: [{ zoom }] });
   }
 
-  async setUpBarcodeReader() {
-    if ('BarcodeDetector' in window) {
-      try {
-        const supported = await window.BarcodeDetector.getSupportedFormats();
-        const formats = NATIVE_FORMATS.filter((f) => supported.includes(f));
-        if (formats.includes('code_39')) {
-          this.detector = new window.BarcodeDetector({ formats });
-          return;
-        }
-      } catch {
-        // Fall back to ZXing.
-      }
-    }
-    await this.loadZxing();
+  setUpBarcodeReader() {
+    return this.barcodes.init();
   }
 
-  // ZXing works in every browser, and is also used for noise-reduced reads.
-  async loadZxing() {
-    if (this.reader) return;
-    await loadScript(ZXING_URL);
-    const ZXing = window.ZXing;
-    const hints = new Map();
-    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-      ZXing.BarcodeFormat.CODE_39, ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.DATA_MATRIX, ZXing.BarcodeFormat.QR_CODE,
-    ]);
-    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    this.reader = new ZXing.MultiFormatReader();
-    this.reader.setHints(hints);
-  }
-
-  loadTextReader() {
-    if (!this.textWorker) {
-      this.textWorker = (async () => {
-        await loadScript(TESSERACT_URL);
-        const worker = await window.Tesseract.createWorker('eng');
-        await worker.setParameters({ tessedit_char_whitelist: `${VIN_CHARS} :`, tessedit_pageseg_mode: '6' });
-        this.textReady = worker;
-        return worker;
-      })();
-      this.textWorker.catch(() => { this.textWorker = null; });
-    }
-    return this.textWorker;
+  async loadTextReader() {
+    this.textReady = await loadTextWorker();
+    return this.textReady;
   }
 
   // Copies the part of the video inside the guide box (plus a margin) to a canvas.
@@ -299,31 +455,8 @@ export class VinScanner {
     return canvas;
   }
 
-  // Returns the text of the first barcode found, or null.
-  async readBarcode(canvas, { enhance = false } = {}) {
-    if (this.detector) {
-      try {
-        const codes = await this.detector.detect(canvas);
-        if (codes.length) return codes.map((c) => c.rawValue);
-      } catch {
-        // Treat as no barcode.
-      }
-      if (!enhance) return null;
-    }
-    try {
-      await this.loadZxing();
-    } catch {
-      return null;
-    }
-    const ZXing = window.ZXing;
-    let lum = toLuminance(canvas);
-    if (enhance) lum = enhanceForBarcode(lum, canvas.width, canvas.height);
-    try {
-      const source = new ZXing.RGBLuminanceSource(lum, canvas.width, canvas.height);
-      return [this.reader.decode(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source))).getText()];
-    } catch {
-      return null;
-    }
+  readBarcode(canvas, options) {
+    return this.barcodes.read(canvas, options);
   }
 
   async readText(canvas) {

@@ -107,6 +107,76 @@ export function findVinInText(text) {
   return wellFormed ? { vin: wellFormed, confidence: 'low' } : null;
 }
 
+// Wider look-alike set for reading whole photos, where fonts vary more.
+const PHOTO_LOOKALIKES = { ...LOOKALIKES, S: '58', G: '609', B: '8E', E: 'B' };
+
+// Every one-character repair of a 17-character word that passes the check digit.
+// A letter in the check digit position (9th) can only be a misread, so that
+// position is recomputed instead.
+function repairWord(word) {
+  if (!/[0-9X]/.test(word[8])) {
+    const candidate = word.slice(0, 8) + (VIN_PATTERN.test(word) ? computeCheckDigit(word) : '?') + word.slice(9);
+    return isCheckValid(candidate) ? [candidate] : [];
+  }
+  const repairs = [];
+  for (let i = 0; i < 17; i++) {
+    for (const alt of PHOTO_LOOKALIKES[word[i]] || '') {
+      if (i >= 11 && !/\d/.test(alt)) continue; // The serial number end is digits.
+      const candidate = word.slice(0, i) + alt + word.slice(i + 1);
+      if (isCheckValid(candidate)) repairs.push(candidate);
+    }
+  }
+  return [...new Set(repairs)];
+}
+
+// VINs end in at least four digits (serial number), which rules out most
+// stray words when the check digit cannot vouch for a read.
+const plausible = (vin) => /\d{4}$/.test(vin) && YEAR_CODES.includes(vin[9]);
+
+// Finds every VIN in text read from a photo or screenshot (lists, sheets).
+// Returns [{ vin, confidence }] with the same confidence rules as findVinInText:
+// high = a whole 17-character word with a correct check digit; low = repaired,
+// glued to other text, split by a space, or failing the check digit.
+export function findAllVinsInText(text) {
+  const lines = String(text ?? '').toUpperCase().replace(/[OQ]/g, '0').replace(/I/g, '1').split(/\n/);
+  const found = new Map();
+  const add = (vin, confidence) => {
+    if (confidence === 'low' && !plausible(vin)) return false;
+    if (found.get(vin) !== 'high') found.set(vin, confidence);
+    return true;
+  };
+
+  for (const line of lines) {
+    const words = line.split(/[^A-Z0-9]+/).filter(Boolean);
+    let lineHasVin = false;
+    for (const word of words) {
+      if (word.length === 17) {
+        if (isCheckValid(word)) {
+          add(word, 'high');
+          lineHasVin = true;
+          continue;
+        }
+        const repairs = repairWord(word);
+        if (repairs.length === 1) lineHasVin = add(repairs[0], 'low') || lineHasVin;
+        else if (VIN_PATTERN.test(word)) lineHasVin = add(word, 'low') || lineHasVin;
+      } else if (word.length > 17 && word.length <= 22) {
+        // Text glued to the front or back of a VIN ("VIN3GN...", "#11FT...").
+        const candidate = [word.slice(-17), word.slice(0, 17)].find(isCheckValid);
+        if (candidate) lineHasVin = add(candidate, 'low') || lineHasVin;
+      }
+    }
+    if (lineHasVin) continue;
+    // A VIN split by stray spaces: two or three neighbouring words that make 17 characters.
+    for (let i = 0; i < words.length; i++) {
+      for (let n = 2; n <= 3 && i + n <= words.length; n++) {
+        const candidate = words.slice(i, i + n).join('');
+        if (candidate.length === 17 && isCheckValid(candidate)) add(candidate, 'low');
+      }
+    }
+  }
+  return [...found].map(([vin, confidence]) => ({ vin, confidence }));
+}
+
 function clean(value) {
   const v = String(value ?? '').trim();
   return v === '' || v === 'Not Applicable' ? '' : v;
