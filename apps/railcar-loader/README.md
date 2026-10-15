@@ -40,6 +40,19 @@ npm start          # serves the app at http://localhost:8080
 
 Camera scanning requires HTTPS or `localhost`.
 
+## Deploying (cache-busting)
+
+The app is served from GitHub through raw.githack, which caches each file separately. To make sure a phone never mixes files from two versions, every local file reference carries a version token (`?v=...`), and `index.html` has a matching `<meta name="app-version">`.
+
+**Before each commit that changes the app, run:**
+
+```bash
+cd apps/railcar-loader
+npm run stamp      # writes a new UTC timestamp token into index.html and js/*.js
+```
+
+If the page and `js/app.js` still come from different versions, the app shows a "A newer version is available. Tap to reload." banner.
+
 ## Testing
 
 ```bash
@@ -65,6 +78,7 @@ Requires Node.js 20 or newer. No dependencies to install.
 | `js/grouping.js` | Vehicle matching and load planning |
 | `js/storage.js` | Saving data (browser now, Supabase later) |
 | `js/export.js` | CSV and Excel export |
+| `scripts/stamp-version.mjs` | Writes a new version token for cache-busting (`npm run stamp`) |
 | `tests/` | Unit tests for `vin.js`, `grouping.js`, and `scanner.js` |
 
 ## Open questions

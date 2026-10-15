@@ -146,6 +146,21 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .status .msg { padding: 10px 14px; border-radius: 6px; background: var(--accent-soft); }
 .status .msg.error { background: var(--danger-soft); color: var(--danger); }
 
+.version-banner {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 0;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: inherit;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -299,7 +314,7 @@ body.scanning { overflow: hidden; }
 
 @media print {
   body { background: #fff; color: #000; font-size: 11pt; }
-  .app-header, .no-print, .tab-panel:not(#tab-plan) { display: none !important; }
+  .app-header, .no-print, .version-banner, .tab-panel:not(#tab-plan) { display: none !important; }
   #tab-plan { display: block !important; }
   .print-title { display: block; margin-bottom: 12px; }
   .card { border: 1px solid #999; break-inside: avoid; padding: 10px; margin-bottom: 10px; }

@@ -3,8 +3,8 @@
 // - Reads printed VIN text (windshield plate, door sticker) automatically when
 //   it is clear, and on demand with the Capture button.
 
-import { cleanVin, validateVin, extractVins, findVinInText } from './vin.js';
-import { loadScript } from './export.js';
+import { cleanVin, validateVin, extractVins, findVinInText } from './vin.js?v=20261015T1433';
+import { loadScript } from './export.js?v=20261015T1433';
 
 const ZXING_URL = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';

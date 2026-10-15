@@ -1,10 +1,30 @@
-import { cleanVin, validateVin, extractVins, decodeVins } from './vin.js';
+import { cleanVin, validateVin, extractVins, decodeVins } from './vin.js?v=20261015T1433';
 import {
   OPTIONAL_FIELDS, classCriteria, criteriaKey, criteriaLabel, summarizeClasses, comboSize, planLoads,
-} from './grouping.js';
-import { loadState, saveState, clearState, defaultState } from './storage.js';
-import { planRows, toCsv, downloadBlob, downloadXlsx, loadXlsx, readPdfText } from './export.js';
-import { VinScanner } from './scanner.js';
+} from './grouping.js?v=20261015T1433';
+import { loadState, saveState, clearState, defaultState } from './storage.js?v=20261015T1433';
+import { planRows, toCsv, downloadBlob, downloadXlsx, loadXlsx, readPdfText } from './export.js?v=20261015T1433';
+import { VinScanner } from './scanner.js?v=20261015T1433';
+
+// Must match <meta name="app-version"> in index.html. Both are set by `npm run stamp`.
+const APP_VERSION = '20261015T1433';
+
+// If a cache served index.html and this file from different deploys, offer a reload.
+function checkVersion() {
+  try {
+    const pageVersion = document.querySelector('meta[name="app-version"]')?.content;
+    if (pageVersion === APP_VERSION || document.querySelector('.version-banner')) return;
+    const banner = document.createElement('button');
+    banner.type = 'button';
+    banner.className = 'version-banner';
+    banner.textContent = 'A newer version is available. Tap to reload.';
+    banner.addEventListener('click', () => location.reload());
+    document.body.prepend(banner);
+  } catch {
+    // Never block the app over this check.
+  }
+}
+checkVersion();
 
 const INPUT_METHODS = [
   { key: 'paste', label: 'Type or paste VINs' },
@@ -194,22 +214,28 @@ function renderVehicles() {
     : '<p class="empty">Add VINs above to get started.</p>';
 }
 
+const SPREADSHEET_TYPES = ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'];
+
+// iOS may hand over a file without the expected extension, so also check the type.
+const isPdf = (file) => /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
+const isSpreadsheet = (file) => /\.xlsx?$/i.test(file.name) || SPREADSHEET_TYPES.includes(file.type);
+
 async function handleFile(file) {
   try {
     let text;
-    if (/\.xlsx?$/i.test(file.name)) {
+    if (isSpreadsheet(file)) {
       showStatus('Reading spreadsheet…');
       const XLSX = await loadXlsx();
       const book = XLSX.read(await file.arrayBuffer(), { type: 'array' });
       text = book.SheetNames.map((name) => XLSX.utils.sheet_to_csv(book.Sheets[name])).join('\n');
-    } else if (/\.pdf$/i.test(file.name)) {
+    } else if (isPdf(file)) {
       showStatus('Reading PDF…');
       text = await readPdfText(await file.arrayBuffer());
     } else {
       text = await file.text();
     }
     const vins = extractVins(text);
-    if (!vins.length && /\.pdf$/i.test(file.name)) showStatus(`No VIN text found in ${file.name}. If it is a scanned image, use the camera scanner instead.`, 'error');
+    if (!vins.length && isPdf(file)) showStatus(`No VIN text found in ${file.name}. If it is a scanned image, use the camera scanner instead.`, 'error');
     else if (!vins.length) showStatus(`No VINs found in ${file.name}.`, 'error');
     else addVins(vins);
   } catch (err) {

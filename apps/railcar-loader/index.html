@@ -4,8 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Railcar Loader</title>
+  <meta name="app-version" content="20261015T1433">
   <meta name="description" content="Decode VINs and group vehicles into railcar load orders.">
-  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/styles.css?v=20261015T1433">
 </head>
 <body>
   <header class="app-header">
@@ -35,7 +36,7 @@
           <h2>Upload a file</h2>
           <p class="hint">PDF, Excel (.xlsx, .xls), CSV, or text. VINs are found anywhere in the file.</p>
           <label class="file-drop">
-            <input id="file-input" type="file" accept=".pdf,.xlsx,.xls,.csv,.txt">
+            <input id="file-input" type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx,application/vnd.ms-excel,.xls,text/csv,.csv,text/plain,.txt">
             <span>Choose file</span>
           </label>
         </div>
@@ -172,6 +173,6 @@
     </div>
   </div>
 
-  <script type="module" src="js/app.js"></script>
+  <script type="module" src="js/app.js?v=20261015T1433"></script>
 </body>
 </html>
